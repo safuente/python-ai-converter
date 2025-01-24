@@ -3,16 +3,17 @@ import io
 import sys
 from dotenv import load_dotenv
 from openai import OpenAI
-#import google.generativeai
 import anthropic
-#from IPython.display import Markdown, display, update_display
+from huggingface_hub import InferenceClient
 import gradio as gr
 import subprocess
-
 
 load_dotenv()
 open_ai_key = os.getenv('OPENAI_API_KEY')
 anthropic_api_key = os.getenv('ANTHROPIC_API_KEY')
+hf_api_key = os.getenv('HUGGINGFACE_API_KEY')
+hf_endpoint_url = os.getenv('HF_ENDPOINT_URL')
+
 openai = OpenAI(api_key=open_ai_key)
 claude = anthropic.Anthropic(api_key=anthropic_api_key)
 
@@ -36,14 +37,13 @@ def messages_for(python):
         {"role": "user", "content": user_prompt_for(python)}
     ]
 
-
 def stream_gpt(python):
     stream = openai.chat.completions.create(model=OPENAI_MODEL, messages=messages_for(python), stream=True)
     reply = ""
     for chunk in stream:
         fragment = chunk.choices[0].delta.content or ""
         reply += fragment
-        yield reply.replace('```cpp\n','').replace('```','')
+        yield reply.replace('```cpp\n', '').replace('```', '')
 
 def stream_claude(python):
     result = claude.messages.stream(
@@ -56,19 +56,38 @@ def stream_claude(python):
     with result as stream:
         for text in stream.text_stream:
             reply += text
-            yield reply.replace('```cpp\n','').replace('```','')
+            yield reply.replace('```cpp\n', '').replace('```', '')
 
+def stream_hf_endpoint(python):
+    import requests
+
+    url = hf_endpoint_url
+    headers = {"Authorization": f"Bearer {hf_api_key}"}
+    payload = {
+        "inputs": user_prompt_for(python),
+        "parameters": {"max_new_tokens": 500}
+    }
+
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        reply = data.get("generated_text", "No output received.")
+        yield reply.replace('```cpp\n', '').replace('```', '')
+    except requests.exceptions.RequestException as e:
+        yield f"Error accessing endpoint: {e}"
 
 def optimize(python, model):
-    if model=="GPT":
+    if model == "GPT":
         result = stream_gpt(python)
-    elif model=="Claude":
+    elif model == "Claude":
         result = stream_claude(python)
+    elif model == "CodeQwen":
+        result = stream_hf_endpoint(python)
     else:
         raise ValueError("Unknown model")
     for stream_so_far in result:
         yield stream_so_far
-
 
 def execute_python(code):
     try:
@@ -79,12 +98,10 @@ def execute_python(code):
         sys.stdout = sys.__stdout__
     return output.getvalue()
 
-
 def write_output(cpp):
-    code = cpp.replace("```cpp","").replace("```","")
+    code = cpp.replace("```cpp", "").replace("```", "")
     with open("optimized.cpp", "w") as f:
         f.write(code)
-
 
 def execute_cpp(code):
     write_output(code)
@@ -98,7 +115,6 @@ def execute_cpp(code):
     except subprocess.CalledProcessError as e:
         return f"An error occurred:\n{e.stderr}"
 
-
 css = """
 .python {background-color: #306998;}
 .cpp {background-color: #050;}
@@ -110,7 +126,7 @@ with gr.Blocks(css=css) as ui:
         python = gr.Textbox(label="Python code:", value="print('Hello world')", lines=10)
         cpp = gr.Textbox(label="C++ code:", lines=10)
     with gr.Row():
-        model = gr.Dropdown(["GPT", "Claude"], label="Select model", value="GPT")
+        model = gr.Dropdown(["GPT", "Claude", "CodeQwen"], label="Select model", value="GPT")
     with gr.Row():
         convert = gr.Button("Convert code")
     with gr.Row():
